@@ -57,10 +57,17 @@ export function InvoicePage() {
   useEffect(() => {
     const list = loadSenders();
     setSenders(list);
-    // Pre-fill the From field with the most recently saved details so the user
-    // does not retype their own company on every new invoice.
+    // Pre-fill the From field and payment details with the most recently saved
+    // profile so the user does not retype either on every new invoice. Each
+    // field is only filled if it is still empty, so nothing typed is overwritten.
     const first = list[0];
-    if (first) setData((d) => (d.from ? d : { ...d, from: first.details }));
+    if (first) {
+      setData((d) => ({
+        ...d,
+        from: d.from || first.details,
+        paymentInfo: d.paymentInfo || first.paymentInfo || "",
+      }));
+    }
   }, []);
 
   const [history, setHistory] = useState<SavedInvoice[]>([]);
@@ -108,17 +115,29 @@ export function InvoicePage() {
     toast.success(t.deleted);
   };
 
+  // Saves the sender side of the invoice: company details AND payment details,
+  // since they are always reused together. Saving the same company again
+  // replaces that profile rather than adding a duplicate, so it doubles as
+  // "update my payment details".
   const saveSender = () => {
     const details = data.from.trim();
-    if (!details) {
+    const paymentInfo = data.paymentInfo.trim();
+    if (!details && !paymentInfo) {
       toast.error(t.emptySender);
       return;
     }
-    const name = (details.split("\n")[0] ?? details).slice(0, 60);
-    const next = [{ id: uid(), name, details }, ...senders.filter((s) => s.details !== details)];
+    const name = (details.split("\n")[0] || paymentInfo).slice(0, 60);
+    const next = [
+      { id: uid(), name, details, paymentInfo },
+      ...senders.filter((s) => s.details !== details),
+    ];
     setSenders(next);
     saveSenders(next);
     toast.success(t.senderSaved);
+  };
+
+  const useSender = (s: Sender) => {
+    setData((d) => ({ ...d, from: s.details, paymentInfo: s.paymentInfo || d.paymentInfo }));
   };
 
   const removeSender = (id: string) => {
@@ -185,7 +204,9 @@ export function InvoicePage() {
       dueDate: "",
       poNumber: "",
       yourRef: "",
-      paymentInfo: "",
+      // Keep the saved payment details on a new invoice - re-entering them is
+      // exactly what saving them is meant to avoid.
+      paymentInfo: senders[0]?.paymentInfo ?? data.paymentInfo,
       items: [{ id: uid(), description: "", quantity: 1, rate: 0 }],
       notes: "",
       terms: "",
@@ -353,12 +374,20 @@ export function InvoicePage() {
                   />
                 </Row>
                 <Row label={t.paymentInfo}>
-                  <input
-                    className={inCls}
-                    placeholder={t.paymentInfoPh}
-                    value={data.paymentInfo}
-                    onChange={(e) => set("paymentInfo", e.target.value)}
-                  />
+                  <div>
+                    <input
+                      className={inCls}
+                      placeholder={t.paymentInfoPh}
+                      value={data.paymentInfo}
+                      onChange={(e) => set("paymentInfo", e.target.value)}
+                    />
+                    <button
+                      onClick={saveSender}
+                      className="ml-2 text-xs text-primary underline underline-offset-2"
+                    >
+                      {t.savePayment}
+                    </button>
+                  </div>
                 </Row>
                 <Row label={t.currency}>
                   <select
@@ -523,10 +552,15 @@ export function InvoicePage() {
                       <p className="truncate text-xs font-medium text-foreground/80">
                         {s.details.split("\n").slice(1).join(", ")}
                       </p>
+                      {s.paymentInfo ? (
+                        <p className="mt-0.5 truncate text-xs font-medium text-primary">
+                          {s.paymentInfo}
+                        </p>
+                      ) : null}
                       <div className="mt-1 flex gap-3 text-xs">
                         <button
                           className="font-medium text-primary underline"
-                          onClick={() => set("from", s.details)}
+                          onClick={() => useSender(s)}
                         >
                           {t.load}
                         </button>

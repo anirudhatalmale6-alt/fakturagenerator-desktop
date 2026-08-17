@@ -5,6 +5,9 @@ export type Sender = {
   id: string;
   name: string;
   details: string;
+  // Bankgiro / IBAN / Swish etc. Optional because profiles saved before this
+  // field existed have no payment details stored.
+  paymentInfo?: string;
 };
 
 const KEY = "invoice.senders.v1";
