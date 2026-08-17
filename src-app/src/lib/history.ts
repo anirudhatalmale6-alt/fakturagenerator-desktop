@@ -34,6 +34,17 @@ export function addToHistory(item: SavedInvoice) {
   return list;
 }
 
+// Save the invoice the user is working on. If it is one they already saved (or
+// opened from the list), overwrite that entry instead of piling up a new copy
+// every time they press save or download.
+export function upsertHistory(item: SavedInvoice) {
+  const existing = loadHistory();
+  const without = existing.filter((i) => i.id !== item.id);
+  const list = [item, ...without].slice(0, 50);
+  saveHistory(list);
+  return list;
+}
+
 export function removeFromHistory(id: string) {
   const list = loadHistory().filter((i) => i.id !== id);
   saveHistory(list);

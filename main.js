@@ -1,4 +1,4 @@
-// Fakturagenerator - Electron main process
+// Invoice gen - Electron main process
 // Serves the pre-built web app from a custom, secure, standard scheme ("app://") so that:
 //   1. The app gets a STABLE origin across launches -> localStorage (where saved customers
 //      and invoice history live) persists reliably between sessions.
@@ -13,6 +13,13 @@ const { pathToFileURL } = require('url');
 const APP_SCHEME = 'app';
 const APP_HOST = 'local';
 const WEB_DIR = path.join(__dirname, 'web');
+
+// Electron derives the userData folder from the product name, and localStorage
+// (saved customers, my details, saved invoices) lives inside it. The app was
+// released as "Fakturagenerator" and later renamed to "Invoice gen", so pin the
+// folder to the original name - otherwise the rename would silently point the
+// app at an empty profile and everything saved in 1.0.0 would look deleted.
+app.setPath('userData', path.join(app.getPath('appData'), 'Fakturagenerator'));
 
 // Minimal content-type map for the static assets we serve.
 const MIME = {
@@ -65,7 +72,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 640,
     backgroundColor: '#f8fafc',
-    title: 'Fakturagenerator',
+    title: 'Invoice gen',
     icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: {
       contextIsolation: true,

@@ -11,10 +11,11 @@ import {
   type Line,
 } from "@/lib/invoice-pdf";
 import { loadCustomers, saveCustomers, type Customer } from "@/lib/customers";
+import { loadSenders, saveSenders, type Sender } from "@/lib/senders";
 import {
-  addToHistory,
   loadHistory,
   removeFromHistory,
+  upsertHistory,
   type SavedInvoice,
 } from "@/lib/history";
 
@@ -52,8 +53,22 @@ export function InvoicePage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   useEffect(() => setCustomers(loadCustomers()), []);
 
+  const [senders, setSenders] = useState<Sender[]>([]);
+  useEffect(() => {
+    const list = loadSenders();
+    setSenders(list);
+    // Pre-fill the From field with the most recently saved details so the user
+    // does not retype their own company on every new invoice.
+    const first = list[0];
+    if (first) setData((d) => (d.from ? d : { ...d, from: first.details }));
+  }, []);
+
   const [history, setHistory] = useState<SavedInvoice[]>([]);
   useEffect(() => setHistory(loadHistory()), []);
+
+  // Id of the saved invoice currently open, so saving again updates that entry
+  // instead of creating a duplicate. null = this invoice has never been saved.
+  const [currentId, setCurrentId] = useState<string | null>(null);
 
   const set = <K extends keyof InvoiceData>(k: K, v: InvoiceData[K]) =>
     setData((d) => ({ ...d, [k]: v }));
@@ -93,11 +108,34 @@ export function InvoicePage() {
     toast.success(t.deleted);
   };
 
-  const download = () => {
+  const saveSender = () => {
+    const details = data.from.trim();
+    if (!details) {
+      toast.error(t.emptySender);
+      return;
+    }
+    const name = (details.split("\n")[0] ?? details).slice(0, 60);
+    const next = [{ id: uid(), name, details }, ...senders.filter((s) => s.details !== details)];
+    setSenders(next);
+    saveSenders(next);
+    toast.success(t.senderSaved);
+  };
+
+  const removeSender = (id: string) => {
+    const next = senders.filter((s) => s.id !== id);
+    setSenders(next);
+    saveSenders(next);
+    toast.success(t.senderDeleted);
+  };
+
+  // Store the invoice as it currently stands. Used both by the Save button and
+  // by Download, so a downloaded invoice is always saved too.
+  const persistInvoice = () => {
     const sums = totals(data);
-    generatePdf(data, t);
-    const next = addToHistory({
-      id: uid(),
+    const isUpdate = currentId !== null;
+    const id = currentId ?? uid();
+    const next = upsertHistory({
+      id,
       number: data.number,
       billTo: data.billTo,
       date: data.date,
@@ -107,7 +145,58 @@ export function InvoicePage() {
       data,
     });
     setHistory(next);
+    setCurrentId(id);
+    return isUpdate;
+  };
+
+  const saveInvoice = () => {
+    const isUpdate = persistInvoice();
+    toast.success(isUpdate ? t.invoiceUpdated : t.savedHistory);
+  };
+
+  const download = () => {
+    generatePdf(data, t);
+    persistInvoice();
     toast.success(t.savedHistory);
+  };
+
+  const openInvoice = (h: SavedInvoice) => {
+    setData(h.data);
+    setCurrentId(h.id);
+    toast.success(t.invoiceOpened);
+  };
+
+  const deleteInvoice = (id: string) => {
+    setHistory(removeFromHistory(id));
+    // The open invoice was just deleted, so saving again must create a new entry
+    // rather than silently resurrecting the deleted one.
+    if (currentId === id) setCurrentId(null);
+  };
+
+  const newInvoice = () => {
+    setData({
+      logo: null,
+      from: senders[0]?.details ?? "",
+      billTo: "",
+      shipTo: "",
+      number: "",
+      date: new Date().toISOString().slice(0, 10),
+      paymentTerms: "",
+      dueDate: "",
+      poNumber: "",
+      yourRef: "",
+      paymentInfo: "",
+      items: [{ id: uid(), description: "", quantity: 1, rate: 0 }],
+      notes: "",
+      terms: "",
+      taxPercent: 25,
+      discount: 0,
+      shipping: 0,
+      amountPaid: 0,
+      currency: data.currency,
+    });
+    setCurrentId(null);
+    toast.success(t.newInvoiceDone);
   };
 
   return (
@@ -185,6 +274,12 @@ export function InvoicePage() {
                     value={data.from}
                     onChange={(e) => set("from", e.target.value)}
                   />
+                  <button
+                    onClick={saveSender}
+                    className="mt-1 text-xs text-primary underline underline-offset-2"
+                  >
+                    {t.saveSender}
+                  </button>
                 </Field>
                 <Field label={t.billTo}>
                   <textarea
@@ -407,6 +502,46 @@ export function InvoicePage() {
             <Button className="w-full" size="lg" onClick={download}>
               {t.download}
             </Button>
+            <div className="flex gap-2">
+              <Button className="flex-1" variant="outline" onClick={saveInvoice}>
+                {t.saveInvoice}
+              </Button>
+              <Button className="flex-1" variant="outline" onClick={newInvoice}>
+                {t.newInvoice}
+              </Button>
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+              <h3 className="mb-3 text-sm font-semibold text-foreground">{t.senders}</h3>
+              {senders.length === 0 ? (
+                <p className="text-sm font-medium text-foreground/80">{t.noSenders}</p>
+              ) : (
+                <ul className="space-y-2">
+                  {senders.map((s) => (
+                    <li key={s.id} className="rounded-md border border-border p-2">
+                      <p className="truncate text-sm font-bold text-foreground">{s.name}</p>
+                      <p className="truncate text-xs font-medium text-foreground/80">
+                        {s.details.split("\n").slice(1).join(", ")}
+                      </p>
+                      <div className="mt-1 flex gap-3 text-xs">
+                        <button
+                          className="font-medium text-primary underline"
+                          onClick={() => set("from", s.details)}
+                        >
+                          {t.load}
+                        </button>
+                        <button
+                          className="font-medium text-destructive underline"
+                          onClick={() => removeSender(s.id)}
+                        >
+                          {t.remove}
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
 
             <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
               <h3 className="mb-3 text-sm font-semibold text-foreground">{t.customers}</h3>
@@ -447,21 +582,28 @@ export function InvoicePage() {
               ) : (
                 <ul className="space-y-2">
                   {history.map((h) => (
-                    <li key={h.id} className="rounded-md border border-border p-2">
-                      <p className="truncate text-sm font-bold text-foreground">#{h.number}</p>
+                    <li
+                      key={h.id}
+                      className={`rounded-md border p-2 ${
+                        h.id === currentId ? "border-primary bg-primary/5" : "border-border"
+                      }`}
+                    >
+                      <p className="truncate text-sm font-bold text-foreground">
+                        #{h.number || "–"}
+                      </p>
                       <p className="truncate text-xs font-medium text-foreground/80">
                         {h.billTo.split("\n")[0] || "–"} · {h.date} · {money(h.total, h.currency)}
                       </p>
                       <div className="mt-1 flex gap-3 text-xs">
                         <button
                           className="font-medium text-primary underline"
-                          onClick={() => setData(h.data)}
+                          onClick={() => openInvoice(h)}
                         >
                           {t.loadHistory}
                         </button>
                         <button
                           className="font-medium text-destructive underline"
-                          onClick={() => setHistory(removeFromHistory(h.id))}
+                          onClick={() => deleteInvoice(h.id)}
                         >
                           {t.deleteHistory}
                         </button>
