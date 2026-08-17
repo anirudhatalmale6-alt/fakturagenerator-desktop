@@ -67,6 +67,8 @@ export const dict = {
     senderSaved: "Dina uppgifter sparades",
     senderDeleted: "Uppgifterna togs bort",
     emptySender: "Fyll i dina uppgifter eller betalningsuppgifter först",
+    jobAdded: "Jobbet lades till från Job Tracker",
+    jobsAdded: "{n} jobb lades till från Job Tracker",
   },
   en: {
     appName: "Invoice gen",
@@ -134,6 +136,8 @@ export const dict = {
     senderSaved: "Your details were saved",
     senderDeleted: "Details removed",
     emptySender: "Fill in your details or payment info first",
+    jobAdded: "Job added from Job Tracker",
+    jobsAdded: "{n} jobs added from Job Tracker",
   },
 };
 

@@ -6,8 +6,9 @@
 //   3. Asset paths resolve correctly (they don't reliably under file://).
 // The app is 100% self-contained and works fully offline - no server, no internet.
 
-const { app, BrowserWindow, protocol, net, shell, Menu, session } = require('electron');
+const { app, BrowserWindow, protocol, net, shell, Menu, session, ipcMain } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { pathToFileURL } = require('url');
 
 const APP_SCHEME = 'app';
@@ -65,6 +66,66 @@ function resolveWebPath(requestUrl) {
   return filePath;
 }
 
+// --- Receiving jobs from the Job Tracker app -------------------------------
+// Job Tracker writes the job to a shared file and then opens invoicegen://,
+// which macOS routes to this app (launching it if needed). The URL is only the
+// trigger; the data is read from the file, so nothing has to survive URL
+// escaping or length limits.
+const HANDOFF_SCHEME = 'invoicegen';
+const BRIDGE_DIR = path.join(app.getPath('appData'), 'JobTrackerInvoiceBridge');
+const BRIDGE_FILE = path.join(BRIDGE_DIR, 'handoff.json');
+
+// Set when a handoff arrives before the window/page is ready to receive it.
+let pendingHandoff = null;
+
+// A handoff is only meant to be collected moments after the click that made it.
+// Anything older is stale (Invoice gen never opened, the send failed, the Mac
+// was restarted) and must not surprise the user by appearing on a later launch.
+const HANDOFF_MAX_AGE_MS = 15 * 60 * 1000;
+
+function readHandoffFile() {
+  try {
+    if (!fs.existsSync(BRIDGE_FILE)) return null;
+    const payload = JSON.parse(fs.readFileSync(BRIDGE_FILE, 'utf8'));
+    // Consume it either way, so the same jobs are never added twice.
+    fs.unlinkSync(BRIDGE_FILE);
+
+    if (!payload || !Array.isArray(payload.jobs) || payload.jobs.length === 0) return null;
+    const age = Date.now() - Number(payload.sentAt || 0);
+    if (!Number.isFinite(age) || age > HANDOFF_MAX_AGE_MS) return null;
+    return payload;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Called when the app is opened via invoicegen://. Delivers straight to the
+// page if it is ready, otherwise holds it until the page asks for it.
+function handleHandoff(win) {
+  const payload = readHandoffFile();
+  if (!payload) return;
+
+  if (win && !win.isDestroyed() && win.webContents && !win.webContents.isLoading()) {
+    win.webContents.send('handoff:received', payload);
+  } else {
+    pendingHandoff = payload;
+  }
+
+  if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+  }
+}
+
+ipcMain.handle('handoff:take', () => {
+  // The page is ready now; hand over anything that arrived while it was not,
+  // including a handoff that launched the app in the first place.
+  const payload = pendingHandoff || readHandoffFile();
+  pendingHandoff = null;
+  return payload;
+});
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -77,7 +138,8 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      spellcheck: false
+      spellcheck: false,
+      preload: path.join(__dirname, 'preload.js')
     }
   });
 
@@ -145,7 +207,44 @@ function setupDownloads() {
   });
 }
 
+// Keep a reference so handoffs can be routed to the live window.
+let mainWindow = null;
+
+// A second launch (which is what opening invoicegen:// does when the app is
+// already running) must hand its job to the existing window rather than start
+// a second copy of the app pointing at the same data.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    handleHandoff(mainWindow);
+  });
+
+  // macOS delivers the URL through this event, both when the app is already
+  // running and shortly after it is launched by the URL.
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    if (!url.startsWith(`${HANDOFF_SCHEME}://`)) return;
+    if (app.isReady()) {
+      handleHandoff(mainWindow);
+    } else {
+      // Too early for a window; the page will collect it via handoff:take.
+      pendingHandoff = readHandoffFile();
+    }
+  });
+}
+
 app.whenReady().then(() => {
+  // Claim invoicegen:// so Job Tracker can open this app. The packaged build
+  // also declares the scheme in Info.plist, which is what macOS actually reads;
+  // this call covers running unpackaged during development.
+  try {
+    app.setAsDefaultProtocolClient(HANDOFF_SCHEME);
+  } catch (e) {
+    /* not fatal - the Info.plist registration is the one that matters */
+  }
+
   // Serve the bundled web app over the custom scheme.
   protocol.handle(APP_SCHEME, async (request) => {
     const filePath = resolveWebPath(request.url);
@@ -173,10 +272,10 @@ app.whenReady().then(() => {
 
   setupDownloads();
   buildMenu();
-  createWindow();
+  mainWindow = createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow();
   });
 });
 

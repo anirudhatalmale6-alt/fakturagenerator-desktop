@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,12 @@ import {
 } from "@/lib/invoice-pdf";
 import { loadCustomers, saveCustomers, type Customer } from "@/lib/customers";
 import { loadSenders, saveSenders, type Sender } from "@/lib/senders";
+import {
+  normaliseCurrency,
+  subscribeToHandoff,
+  takePendingHandoff,
+  type HandoffPayload,
+} from "@/lib/handoff";
 import {
   loadHistory,
   removeFromHistory,
@@ -76,6 +82,66 @@ export function InvoicePage() {
   // Id of the saved invoice currently open, so saving again updates that entry
   // instead of creating a duplicate. null = this invoice has never been saved.
   const [currentId, setCurrentId] = useState<string | null>(null);
+
+  // A job arriving from Job Tracker becomes a line item. If the invoice on
+  // screen is still blank it is filled in fresh; if there is already work on it
+  // the job is APPENDED, so sending several jobs builds one invoice with
+  // several lines and nothing typed is ever thrown away.
+  const applyHandoff = useCallback(
+    (payload: HandoffPayload | null) => {
+      const jobs = payload?.jobs ?? [];
+      if (jobs.length === 0) return;
+
+      setData((d) => {
+        const blank =
+          !d.billTo.trim() &&
+          d.items.every((i) => !i.description.trim() && !i.rate);
+
+        const added = jobs.map((j) => ({
+          id: uid(),
+          description: j.name,
+          quantity: 1,
+          rate: Number(j.amount) || 0,
+        }));
+
+        const first = jobs[0]!;
+        if (!blank) {
+          // Keep the invoice's own currency and numbers - changing them here
+          // would silently reinterpret the lines that are already on it.
+          return { ...d, items: [...d.items, ...added] };
+        }
+
+        return {
+          ...d,
+          items: added,
+          currency: normaliseCurrency(first.currency, d.currency),
+          number: first.invoiceNumber || d.number,
+          poNumber: first.poNumber || d.poNumber,
+        };
+      });
+
+      // The invoice now differs from whatever was last saved, so a save must
+      // create a new entry rather than overwrite the invoice it came from.
+      setCurrentId(null);
+      toast.success(jobs.length === 1 ? t.jobAdded : t.jobsAdded.replace("{n}", String(jobs.length)));
+    },
+    [t],
+  );
+
+  // Collect a job that was handed over before this page was ready (which is the
+  // case when the click in Job Tracker is what launched this app).
+  useEffect(() => {
+    let cancelled = false;
+    takePendingHandoff().then((payload) => {
+      if (!cancelled) applyHandoff(payload);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyHandoff]);
+
+  // And handle jobs sent while this app is already open.
+  useEffect(() => subscribeToHandoff(applyHandoff), [applyHandoff]);
 
   const set = <K extends keyof InvoiceData>(k: K, v: InvoiceData[K]) =>
     setData((d) => ({ ...d, [k]: v }));
